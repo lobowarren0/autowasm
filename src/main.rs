@@ -4,6 +4,7 @@ use std::path::Path;
 mod analyzer;
 mod detector;
 mod framework;
+mod source;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -45,23 +46,34 @@ fn main() {
     println!("Framework: {framework}");
 
     if framework == framework::Framework::Hono {
-        let source_path = repository.join("src").join("index.ts");
+        let source_files = match source::discover_source_files(repository) {
+            Ok(files) => files,
+            Err(error) => {
+                eprintln!("Source discovery error: {error}");
+                std::process::exit(1);
+            }
+        };
 
-        if source_path.is_file() {
-            match analyzer::discover_routes(&source_path) {
-                Ok(routes) => {
-                    println!();
-                    println!("Routes:");
+        let mut routes = Vec::new();
 
-                    for route in routes {
-                        println!("  {} {}", route.method, route.path);
-                    }
-                }
+        for source_file in source_files {
+            match analyzer::discover_routes(&source_file) {
+                Ok(mut discovered) => routes.append(&mut discovered),
                 Err(error) => {
-                    eprintln!("Route discovery error: {error}");
+                    eprintln!(
+                        "Route discovery error in {}: {error}",
+                        source_file.display()
+                    );
                     std::process::exit(1);
                 }
             }
+        }
+
+        println!();
+        println!("Routes:");
+
+        for route in routes {
+            println!("  {} {}", route.method, route.path);
         }
     }
 }
