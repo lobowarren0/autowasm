@@ -9,6 +9,7 @@ use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 pub struct Route {
     pub method: String,
     pub path: String,
+    pub handler: String,
 }
 
 pub fn discover_routes(source_path: &Path) -> io::Result<Vec<Route>> {
@@ -32,7 +33,8 @@ pub fn discover_routes(source_path: &Path) -> io::Result<Vec<Route>> {
                 object: (identifier) @object
                 property: (property_identifier) @method)
             arguments: (arguments
-                (string) @path)
+                (string) @path
+                (_) @handler)
         )
         "#,
     )
@@ -47,6 +49,7 @@ pub fn discover_routes(source_path: &Path) -> io::Result<Vec<Route>> {
         let mut object = None;
         let mut method = None;
         let mut path = None;
+        let mut handler = None;
 
         for capture in match_.captures {
             let text = capture.node.utf8_text(source.as_bytes()).unwrap_or("");
@@ -55,20 +58,138 @@ pub fn discover_routes(source_path: &Path) -> io::Result<Vec<Route>> {
                 0 => object = Some(text),
                 1 => method = Some(text),
                 2 => path = Some(text.trim_matches('"').to_string()),
+                3 => handler = Some(text.to_string()),
                 _ => {}
             }
         }
 
         if object == Some("app") {
-            if let (Some(method), Some(path)) = (method, path) {
+            if let (Some(method), Some(path), Some(handler)) = (method, path, handler) {
                 let method = method.to_uppercase();
 
                 if matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
-                    routes.push(Route { method, path });
+                    routes.push(Route {
+                        method,
+                        path,
+                        handler,
+                    });
                 }
             }
         }
     }
 
     Ok(routes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestSource {
+        path: std::path::PathBuf,
+    }
+
+    impl TestSource {
+        fn new(source: &str) -> Self {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+
+            let path = std::env::temp_dir().join(format!("autowasm-analyzer-{timestamp}.ts"));
+
+            fs::write(&path, source).unwrap();
+
+            Self { path }
+        }
+    }
+
+    impl Drop for TestSource {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn discovers_get_route_and_handler() {
+        let source = TestSource::new(
+            r#"
+            const app = new Hono();
+
+            app.get("/hello", (c) => {
+                return c.json({ message: "hello" });
+            });
+            "#,
+        );
+
+        let routes = discover_routes(&source.path).unwrap();
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].method, "GET");
+        assert_eq!(routes[0].path, "/hello");
+        assert!(routes[0].handler.contains("c.json"));
+    }
+
+    #[test]
+    fn discovers_multiple_routes_and_handlers() {
+        let source = TestSource::new(
+            r#"
+            const app = new Hono();
+
+            app.get("/users", (c) => {
+                return c.json({ users: [] });
+            });
+
+            app.post("/users", (c) => {
+                return c.json({ created: true });
+            });
+
+            app.delete("/users/:id", (c) => {
+                return c.json({ deleted: true });
+            });
+            "#,
+        );
+
+        let routes = discover_routes(&source.path).unwrap();
+
+        assert_eq!(routes.len(), 3);
+
+        assert_eq!(routes[0].method, "GET");
+        assert_eq!(routes[0].path, "/users");
+        assert!(routes[0].handler.contains("users"));
+
+        assert_eq!(routes[1].method, "POST");
+        assert_eq!(routes[1].path, "/users");
+        assert!(routes[1].handler.contains("created"));
+
+        assert_eq!(routes[2].method, "DELETE");
+        assert_eq!(routes[2].path, "/users/:id");
+        assert!(routes[2].handler.contains("deleted"));
+    }
+
+    #[test]
+    fn ignores_calls_without_handlers() {
+        let source = TestSource::new(
+            r#"
+            const app = new Hono();
+
+            app.get("/hello");
+            app.listen(3000);
+            "#,
+        );
+
+        let routes = discover_routes(&source.path).unwrap();
+
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn returns_error_for_missing_file() {
+        let path = std::env::temp_dir().join("autowasm-missing-source.ts");
+
+        let result = discover_routes(&path);
+
+        assert!(result.is_err());
+    }
 }

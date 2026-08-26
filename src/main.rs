@@ -74,6 +74,7 @@ fn main() {
 
         for route in routes {
             println!("  {} {}", route.method, route.path);
+            println!("    Handler: {}", route.handler);
         }
     }
 }
