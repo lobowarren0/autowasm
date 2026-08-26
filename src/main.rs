@@ -2,6 +2,7 @@ use std::env;
 use std::path::Path;
 
 mod analyzer;
+mod capability;
 mod detector;
 mod framework;
 mod source;
@@ -73,8 +74,20 @@ fn main() {
         println!("Routes:");
 
         for route in routes {
+            let capabilities = capability::detect(&route.handler);
+
             println!("  {} {}", route.method, route.path);
             println!("    Handler: {}", route.handler);
+
+            if capabilities.is_empty() {
+                println!("    Capabilities: none");
+            } else {
+                println!("    Capabilities:");
+
+                for capability in capabilities {
+                    println!("      - {capability}");
+                }
+            }
         }
     }
 }

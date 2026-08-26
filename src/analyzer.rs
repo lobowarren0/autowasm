@@ -192,4 +192,25 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn extracts_network_route_handler() {
+        let source = TestSource::new(
+            r#"
+            const app = new Hono();
+
+            app.get("/external", async (c) => {
+                const response = await fetch("https://example.com");
+                return c.json(await response.json());
+            });
+            "#,
+        );
+
+        let routes = discover_routes(&source.path).unwrap();
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].method, "GET");
+        assert_eq!(routes[0].path, "/external");
+        assert!(routes[0].handler.contains("fetch"));
+    }
 }

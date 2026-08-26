@@ -10,4 +10,9 @@ app.get("/health", (c) => {
   return c.json({ status: "ok" });
 });
 
+app.get("/external", async (c) => {
+  const response = await fetch("https://example.com");
+  return c.json(await response.json());
+});
+
 export default app;
