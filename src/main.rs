@@ -5,6 +5,8 @@ mod analyzer;
 mod capability;
 mod detector;
 mod framework;
+mod pipeline;
+mod service;
 mod source;
 
 fn main() {
@@ -46,47 +48,35 @@ fn main() {
     println!();
     println!("Framework: {framework}");
 
-    if framework == framework::Framework::Hono {
-        let source_files = match source::discover_source_files(repository) {
-            Ok(files) => files,
-            Err(error) => {
-                eprintln!("Source discovery error: {error}");
-                std::process::exit(1);
-            }
-        };
-
-        let mut routes = Vec::new();
-
-        for source_file in source_files {
-            match analyzer::discover_routes(&source_file) {
-                Ok(mut discovered) => routes.append(&mut discovered),
-                Err(error) => {
-                    eprintln!(
-                        "Route discovery error in {}: {error}",
-                        source_file.display()
-                    );
-                    std::process::exit(1);
-                }
-            }
+    let services = match pipeline::analyze(repository) {
+        Ok(services) => services,
+        Err(error) => {
+            eprintln!("Analysis error: {error}");
+            std::process::exit(1);
         }
+    };
 
+    if services.is_empty() {
         println!();
-        println!("Routes:");
+        println!("Services: none");
+        return;
+    }
 
-        for route in routes {
-            let capabilities = capability::detect(&route.handler);
+    println!();
+    println!("Services:");
 
-            println!("  {} {}", route.method, route.path);
-            println!("    Handler: {}", route.handler);
+    for service in services {
+        println!("  {} {}", service.method, service.path);
+        println!("    Name: {}", service.name);
+        println!("    Handler: {}", service.handler);
 
-            if capabilities.is_empty() {
-                println!("    Capabilities: none");
-            } else {
-                println!("    Capabilities:");
+        if service.capabilities.is_empty() {
+            println!("    Capabilities: none");
+        } else {
+            println!("    Capabilities:");
 
-                for capability in capabilities {
-                    println!("      - {capability}");
-                }
+            for capability in &service.capabilities {
+                println!("      - {capability}");
             }
         }
     }
