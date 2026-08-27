@@ -25,3 +25,6 @@ target
 
 /target
 vendor/
+
+# Generated WASM artifacts
+fixtures/wasm/*.wasm

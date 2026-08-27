@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+mod abi;
 mod analyzer;
 mod capability;
 mod detector;
