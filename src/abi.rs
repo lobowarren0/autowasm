@@ -27,15 +27,6 @@ impl Request {
     }
 }
 
-impl Response {
-    pub fn new(status: u16, body: impl Into<String>) -> Self {
-        Self {
-            status,
-            body: body.into(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,7 +43,10 @@ mod tests {
 
     #[test]
     fn response_round_trips_through_json() {
-        let response = Response::new(200, r#"{"message":"hello"}"#);
+        let response = Response {
+            status: 200,
+            body: r#"{"message":"hello"}"#.to_string(),
+        };
 
         let json = serde_json::to_string(&response).unwrap();
         let decoded: Response = serde_json::from_str(&json).unwrap();

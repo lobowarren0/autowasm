@@ -19,11 +19,13 @@ fn main() {
         Some("analyze") => analyze_command(&args),
         Some("build") => build_command(&args),
         Some("run") => run_command(&args),
+        Some("invoke") => invoke_command(&args),
         _ => {
             eprintln!("Usage:");
             eprintln!("  autowasm analyze <repository-path>");
             eprintln!("  autowasm build <wat-path> <wasm-path>");
             eprintln!("  autowasm run <wasm-path>");
+            eprintln!("  autowasm invoke <wasm-path> <method> <path> [body]");
             std::process::exit(1);
         }
     }
@@ -145,6 +147,31 @@ fn run_command(args: &[String]) {
         Ok(result) => println!("WASM execution result: {result}"),
         Err(error) => {
             eprintln!("WASM execution error: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn invoke_command(args: &[String]) {
+    if args.len() != 5 && args.len() != 6 {
+        eprintln!("Usage: autowasm invoke <wasm-path> <method> <path> [body]");
+        std::process::exit(1);
+    }
+
+    let module_path = Path::new(&args[2]);
+    let method = &args[3];
+    let path = &args[4];
+    let body = args.get(5).map(String::as_str).unwrap_or("");
+
+    let request = abi::Request::new(method, path, body);
+
+    match runtime::execute_request(module_path, &request) {
+        Ok(response) => {
+            println!("Status: {}", response.status);
+            println!("Body: {}", response.body);
+        }
+        Err(error) => {
+            eprintln!("WASM invocation error: {error}");
             std::process::exit(1);
         }
     }
