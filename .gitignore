@@ -28,3 +28,6 @@ vendor/
 
 # Generated WASM artifacts
 fixtures/wasm/*.wasm
+
+# Local AutoWASM deployment artifacts
+**/.autowasm/
