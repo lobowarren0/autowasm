@@ -1,18 +1,33 @@
 use std::io;
 use std::path::Path;
 
-use wasmtime::{Engine, Instance, Module, Store};
+use wasmtime::{Config, Engine, Instance, Module, Store};
 
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FUEL: u64 = 1_000_000;
+
+fn create_engine() -> io::Result<Engine> {
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    Engine::new(&config).map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn create_store(engine: &Engine) -> io::Result<Store<()>> {
+    let mut store = Store::new(engine, ());
+    store
+        .set_fuel(MAX_FUEL)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(store)
+}
 
 pub fn execute_module(module_path: &Path) -> io::Result<i32> {
-    let engine = Engine::default();
+    let engine = create_engine()?;
 
     let module = Module::from_file(&engine, module_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let mut store = Store::new(&engine, ());
+    let mut store = create_store(&engine)?;
 
     let instance = Instance::new(&mut store, &module, &[])
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -29,12 +44,12 @@ pub fn execute_request(
     module_path: &Path,
     request: &crate::abi::Request,
 ) -> io::Result<crate::abi::Response> {
-    let engine = Engine::default();
+    let engine = create_engine()?;
 
     let module = Module::from_file(&engine, module_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let mut store = Store::new(&engine, ());
+    let mut store = create_store(&engine)?;
 
     let instance = Instance::new(&mut store, &module, &[])
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -203,6 +218,32 @@ mod tests {
             unpack_pointer_length((2048_i64 << 32) | 26).unwrap(),
             (2048, 26)
         );
+    }
+
+    #[test]
+    fn rejects_modules_that_exhaust_fuel() {
+        let module_path = write_temporary_module(
+            r#"
+            (module
+                (func (export "run") (result i32)
+                    (loop (br 0))
+                )
+            )
+            "#,
+        );
+
+        let error = execute_module(&module_path).unwrap_err();
+
+        assert!(!error.to_string().is_empty());
+    }
+
+    fn write_temporary_module(wat_source: &str) -> std::path::PathBuf {
+        let wasm = compile_wat(wat_source).expect("WAT should compile");
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let module_path = temp_dir.path().join("module.wasm");
+        std::fs::write(&module_path, wasm).expect("temporary module should be written");
+        Box::leak(Box::new(temp_dir));
+        module_path
     }
 
     #[test]
