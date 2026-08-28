@@ -190,4 +190,31 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, r#"{"active":true,"message":"hello"}"#);
     }
+
+    #[test]
+    fn compiles_and_executes_route_parameter_response() {
+        let service = crate::service::Service::new(
+            "delete-users-id".to_string(),
+            "DELETE".to_string(),
+            "/users/:id".to_string(),
+            r#"(c) => {
+  return c.json({ id: c.req.param("id") });
+}"#
+            .to_string(),
+            vec![],
+        );
+
+        let wasm = crate::compiler::compile_service(&service).expect("service should compile");
+        let engine = Engine::default();
+        Module::new(&engine, &wasm).expect("route parameter module should validate");
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let module_path = temp_dir.path().join("service.wasm");
+        fs::write(&module_path, wasm).expect("temporary WASM module should be written");
+
+        let request = crate::abi::Request::new("DELETE", "/users/123", "");
+        let response = execute_request(&module_path, &request).expect("request should execute");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, r#"{"id":"123"}"#);
+    }
 }

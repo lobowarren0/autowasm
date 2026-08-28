@@ -16,6 +16,10 @@ fn generate_wat(service: &Service) -> io::Result<String> {
         ));
     }
 
+    if let Some(dynamic) = infer_dynamic_response(service)? {
+        return Ok(dynamic_wat(service, &dynamic));
+    }
+
     let body = infer_static_body(&service.handler)?;
 
     let response = format!(r#"{{"status":200,"body":"{}"}}"#, escape_json_string(&body));
@@ -51,6 +55,173 @@ fn generate_wat(service: &Service) -> io::Result<String> {
         escaped_response = escape_wat_string(&response),
         packed = pack_pointer_length(2048, response_len),
     ))
+}
+
+struct DynamicResponse {
+    route_prefix: String,
+    response_prefix: String,
+    response_suffix: String,
+}
+
+fn infer_dynamic_response(service: &Service) -> io::Result<Option<DynamicResponse>> {
+    let marker = "c.req.param(\"";
+    let Some(marker_start) = service.handler.find(marker) else {
+        return Ok(None);
+    };
+    let name_start = marker_start + marker.len();
+    let name_end = service.handler[name_start..]
+        .find("\")")
+        .map(|offset| name_start + offset)
+        .ok_or_else(|| io::Error::other("malformed route parameter expression"))?;
+    let parameter_name = &service.handler[name_start..name_end];
+    let route_marker = format!(":{parameter_name}");
+    let route_parameter_start = service
+        .path
+        .find(&route_marker)
+        .ok_or_else(|| io::Error::other("route parameter is not present in service path"))?;
+    let route_prefix = service.path[..route_parameter_start].to_string();
+    if route_prefix.is_empty()
+        || service.path[route_parameter_start + route_marker.len()..].contains(':')
+    {
+        return Err(io::Error::other(
+            "only one non-root route parameter is supported",
+        ));
+    }
+
+    let json_start = service
+        .handler
+        .find("c.json(")
+        .ok_or_else(|| io::Error::other("could not find c.json response"))?
+        + "c.json(".len();
+    let json_end = service.handler[json_start..]
+        .rfind(')')
+        .map(|offset| json_start + offset)
+        .ok_or_else(|| io::Error::other("malformed c.json response"))?;
+    let expression = service.handler[json_start..json_end].trim();
+    let dynamic_expression = format!("c.req.param(\"{parameter_name}\")");
+    let template = expression.replace(&dynamic_expression, "\"__AUTOWASM_PARAM__\"");
+    let body = parse_json_literal(&template)?.to_string();
+    let value_marker = "\"__AUTOWASM_PARAM__\"";
+    let value_start = body
+        .find(value_marker)
+        .ok_or_else(|| io::Error::other("route parameter must be a JSON string value"))?;
+    let wrapper_prefix = r#"{"status":200,"body":""#;
+    let wrapper_suffix = r#""}"#;
+
+    Ok(Some(DynamicResponse {
+        route_prefix,
+        response_prefix: format!(
+            "{}{}",
+            wrapper_prefix,
+            escape_json_string(&format!("{}\"", &body[..value_start]))
+        ),
+        response_suffix: format!(
+            "{}{}",
+            escape_json_string(&format!("\"{}", &body[value_start + value_marker.len()..])),
+            wrapper_suffix
+        ),
+    }))
+}
+
+fn dynamic_wat(service: &Service, response: &DynamicResponse) -> String {
+    let prefix_length = response.response_prefix.len();
+    let suffix_length = response.response_suffix.len();
+    let path_offset = format!("{{\"method\":\"{}\",\"path\":\"", service.method).len();
+    let suffix_stores = response
+                .response_suffix
+                .bytes()
+                .enumerate()
+                .map(|(offset, byte)| {
+                        format!(
+                                "    local.get $output\n    i32.const {offset}\n    i32.add\n    i32.const {byte}\n    i32.store8\n"
+                        )
+                })
+                .collect::<String>();
+    let response_length = format!(
+        "(i32.sub (i32.add (local.get $output) (i32.const {suffix_length})) (i32.const 2048))"
+    );
+
+    format!(
+        r#"(module
+    (memory (export "memory") 1)
+    (global $heap (mut i32) (i32.const 1024))
+    (data (i32.const 2048) "{prefix}")
+
+    (func (export "alloc") (param $size i32) (result i32)
+        (local $ptr i32)
+        global.get $heap
+        local.tee $ptr
+        local.get $size
+        i32.add
+        global.set $heap
+        local.get $ptr
+    )
+
+    (func (export "handle") (param $ptr i32) (param $len i32) (result i64)
+        (local $input i32)
+        (local $output i32)
+        (local $end i32)
+        local.get $ptr
+        i32.const {path_offset}
+        i32.add
+        i32.const {route_prefix_length}
+        i32.add
+        local.set $input
+        local.get $ptr
+        local.get $len
+        i32.add
+        local.set $end
+        i32.const 2048
+        i32.const {prefix_length}
+        i32.add
+        local.set $output
+        block $done
+            loop $copy
+                local.get $input
+                local.get $end
+                i32.ge_u
+                br_if $done
+                local.get $input
+                i32.load8_u
+                i32.const 34
+                i32.eq
+                br_if $done
+                local.get $input
+                i32.load8_u
+                i32.const 47
+                i32.eq
+                br_if $done
+                local.get $output
+                local.get $input
+                i32.load8_u
+                i32.store8
+                local.get $input
+                i32.const 1
+                i32.add
+                local.set $input
+                local.get $output
+                i32.const 1
+                i32.add
+                local.set $output
+                br $copy
+            end
+        end
+{suffix_stores}    i32.const 2048
+        i64.extend_i32_u
+        i64.const 32
+        i64.shl
+        {response_length}
+        i64.extend_i32_u
+        i64.or
+    )
+)"#,
+        prefix = escape_wat_string(&response.response_prefix),
+        path_offset = path_offset,
+        route_prefix_length = response.route_prefix.len(),
+        prefix_length = prefix_length,
+        suffix_stores = suffix_stores,
+        response_length = response_length,
+    )
 }
 
 fn infer_static_body(handler: &str) -> io::Result<String> {
