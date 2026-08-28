@@ -39,11 +39,14 @@ fn generate_wat(service: &Service, policy: &CapabilityPolicy) -> io::Result<Stri
         return Ok(dynamic_wat(service, &dynamic));
     }
 
-    let HandlerResponse::Static(body) = response else {
+    let HandlerResponse::Static { body, status } = response else {
         unreachable!("dynamic handler response returned above");
     };
 
-    let response = format!(r#"{{"status":200,"body":"{}"}}"#, escape_json_string(&body));
+    let response = format!(
+        r#"{{"status":{status},"body":"{}"}}"#,
+        escape_json_string(&body)
+    );
 
     let response_len = response.len();
 
@@ -79,7 +82,7 @@ fn generate_wat(service: &Service, policy: &CapabilityPolicy) -> io::Result<Stri
 }
 
 enum HandlerResponse {
-    Static(String),
+    Static { body: String, status: u16 },
     Dynamic(DynamicResponse),
 }
 
@@ -88,9 +91,8 @@ fn lower_handler(service: &Service) -> io::Result<HandlerResponse> {
         return Ok(HandlerResponse::Dynamic(dynamic));
     }
 
-    Ok(HandlerResponse::Static(infer_static_body(
-        &service.handler,
-    )?))
+    let (status, body) = infer_static_response(&service.handler)?;
+    Ok(HandlerResponse::Static { body, status })
 }
 
 struct DynamicResponse {
@@ -260,7 +262,7 @@ fn dynamic_wat(service: &Service, response: &DynamicResponse) -> String {
     )
 }
 
-fn infer_static_body(handler: &str) -> io::Result<String> {
+fn infer_static_response(handler: &str) -> io::Result<(u16, String)> {
     let (marker, expects_string) = if handler.contains("c.json(") {
         ("c.json(", false)
     } else if handler.contains("c.text(") {
@@ -281,7 +283,11 @@ fn infer_static_body(handler: &str) -> io::Result<String> {
         .rfind(')')
         .ok_or_else(|| io::Error::other("malformed c.json response"))?;
 
-    let value = expression[..end].trim();
+    let arguments = split_arguments(expression[..end].trim())?;
+    let value = arguments
+        .first()
+        .copied()
+        .ok_or_else(|| io::Error::other("missing static response value"))?;
 
     if value.starts_with("await ")
         || value.contains("fetch(")
@@ -298,11 +304,63 @@ fn infer_static_body(handler: &str) -> io::Result<String> {
         return Err(io::Error::other("c.text requires a static string literal"));
     }
 
-    Ok(if expects_string {
+    let status = match arguments.get(1) {
+        Some(status) => {
+            let status = parse_json_literal(status)?;
+            let status = status
+                .as_u64()
+                .ok_or_else(|| io::Error::other("response status must be an integer"))?;
+            u16::try_from(status)
+                .map_err(|_| io::Error::other("response status is out of range"))?
+        }
+        None => 200,
+    };
+
+    let body = if expects_string {
         parsed.as_str().unwrap_or_default().to_string()
     } else {
         parsed.to_string()
-    })
+    };
+
+    Ok((status, body))
+}
+
+fn split_arguments(source: &str) -> io::Result<Vec<&str>> {
+    let mut arguments = Vec::new();
+    let mut start = 0;
+    let mut depth = 0;
+    let mut quote = None;
+    let bytes = source.as_bytes();
+
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' | b'\'' => quote = Some(byte),
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                arguments.push(source[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || depth != 0 {
+        return Err(io::Error::other("malformed static response arguments"));
+    }
+
+    arguments.push(source[start..].trim());
+    Ok(arguments)
 }
 
 fn parse_json_literal(source: &str) -> io::Result<Value> {
@@ -629,7 +687,10 @@ mod tests {
 
         assert!(matches!(
             lower_handler(&static_service).unwrap(),
-            HandlerResponse::Static(_)
+            HandlerResponse::Static {
+                body: _,
+                status: 200
+            }
         ));
         assert!(matches!(
             lower_handler(&dynamic_service).unwrap(),
@@ -653,5 +714,20 @@ mod tests {
         let wasm = compile_service(&service).unwrap();
 
         assert_eq!(&wasm[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn parses_explicit_response_status() {
+        let (status, body) =
+            infer_static_response(r#"(c) => c.json({ created: true, values: [1, 2] }, 201)"#)
+                .unwrap();
+
+        assert_eq!(status, 201);
+        assert_eq!(body, r#"{"created":true,"values":[1,2]}"#);
+
+        let (text_status, text_body) =
+            infer_static_response(r#"(c) => c.text("ok", 202)"#).unwrap();
+        assert_eq!(text_status, 202);
+        assert_eq!(text_body, "ok");
     }
 }

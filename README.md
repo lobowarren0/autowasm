@@ -33,9 +33,9 @@ cargo run -- invoke fixtures/hono-app/.autowasm/services/get-hello/service.wasm 
 
 The current compiler supports Hono handlers returning `c.json(...)` with
 static JSON-compatible literals: strings, numbers, booleans, null, arrays, and
-nested objects. It also supports static `c.text(...)` responses and one route
-parameter used as a JSON string value, for example `c.req.param("id")` on
-`/users/:id`.
+nested objects. It also supports static `c.text(...)` responses, explicit
+numeric status codes, and one route parameter used as a JSON string value, for
+example `c.req.param("id")` on `/users/:id`.
 
 Handlers using network, filesystem, environment, database, or other dynamic
 behavior are reported as unsupported. They are retained in `manifest.json`
