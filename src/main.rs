@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 
 mod abi;
 mod analyzer;
@@ -36,12 +37,19 @@ fn main() {
 }
 
 fn deploy_command(args: &[String]) {
-    if args.len() != 3 {
-        eprintln!("Usage: autowasm deploy <repository-path>");
+    if args.len() < 3 {
+        eprintln!("Usage: autowasm deploy <repository-path> [--allow-capability <name>]...");
         std::process::exit(1);
     }
 
     let repository = Path::new(&args[2]);
+    let policy = match parse_capability_policy(args) {
+        Ok(policy) => policy,
+        Err(error) => {
+            eprintln!("Deployment option error: {error}");
+            std::process::exit(1);
+        }
+    };
     let detection = match detector::detect(repository) {
         Ok(result) => result,
         Err(error) => {
@@ -62,7 +70,7 @@ fn deploy_command(args: &[String]) {
     println!("Language: {}", detection.language);
     println!("Framework: {framework}");
 
-    let summary = match deployment::deploy(repository) {
+    let summary = match deployment::deploy_with_policy(repository, &policy) {
         Ok(summary) => summary,
         Err(error) => {
             eprintln!("Deployment error: {error}");
@@ -76,6 +84,24 @@ fn deploy_command(args: &[String]) {
     println!("  Compiled: {}", summary.compiled);
     println!("  Unsupported: {}", summary.unsupported);
     println!("  Output: {}", summary.output.display());
+}
+
+fn parse_capability_policy(args: &[String]) -> Result<capability::CapabilityPolicy, String> {
+    let mut allowed = Vec::new();
+    let mut index = 3;
+
+    while index < args.len() {
+        if args.get(index).map(String::as_str) != Some("--allow-capability") {
+            return Err(format!("unknown option: {}", args[index]));
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| "missing capability name".to_string())?;
+        allowed.push(capability::Capability::from_str(value)?);
+        index += 2;
+    }
+
+    Ok(capability::CapabilityPolicy::allowing(allowed))
 }
 
 fn analyze_command(args: &[String]) {
@@ -221,5 +247,41 @@ fn invoke_command(args: &[String]) {
             eprintln!("WASM invocation error: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_repeatable_capability_flags() {
+        let args = vec![
+            "autowasm".to_string(),
+            "deploy".to_string(),
+            ".".to_string(),
+            "--allow-capability".to_string(),
+            "network".to_string(),
+            "--allow-capability".to_string(),
+            "filesystem".to_string(),
+        ];
+
+        let policy = parse_capability_policy(&args).unwrap();
+
+        assert!(policy.allows(&capability::Capability::Network));
+        assert!(policy.allows(&capability::Capability::Filesystem));
+    }
+
+    #[test]
+    fn rejects_unknown_capability_flags() {
+        let args = vec![
+            "autowasm".to_string(),
+            "deploy".to_string(),
+            ".".to_string(),
+            "--allow-capability".to_string(),
+            "gpu".to_string(),
+        ];
+
+        assert!(parse_capability_policy(&args).is_err());
     }
 }

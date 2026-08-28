@@ -10,6 +10,7 @@ packages the result for local execution.
 cargo test
 cargo run -- analyze fixtures/hono-app
 cargo run -- deploy fixtures/hono-app
+cargo run -- deploy fixtures/hono-app --allow-capability network
 ```
 
 Deployment writes deterministic artifacts to `fixtures/hono-app/.autowasm/`:
@@ -46,9 +47,12 @@ dropped.
 ```text
 autowasm analyze <repository-path>
 autowasm deploy <repository-path>
+autowasm deploy <repository-path> [--allow-capability <name>]...
 autowasm build <wat-path> <wasm-path>
 autowasm run <wasm-path>
 autowasm invoke <wasm-path> <method> <path> [body]
 ```
 
 This is a local packaging MVP. It does not deploy to a cloud provider.
+Capability flags configure the policy boundary; capability-specific host
+implementations remain unsupported until their runtime integration is added.

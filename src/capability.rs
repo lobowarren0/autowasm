@@ -40,6 +40,20 @@ impl std::fmt::Display for Capability {
     }
 }
 
+impl std::str::FromStr for Capability {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "network" => Ok(Self::Network),
+            "filesystem" => Ok(Self::Filesystem),
+            "environment" => Ok(Self::Environment),
+            "database" => Ok(Self::Database),
+            _ => Err(format!("unknown capability: {value}")),
+        }
+    }
+}
+
 pub fn detect(handler: &str) -> Vec<Capability> {
     let mut capabilities = Vec::new();
 

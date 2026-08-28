@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::capability::CapabilityPolicy;
 use crate::compiler;
 use crate::pipeline;
 use crate::service::Service;
@@ -37,6 +38,13 @@ pub struct DeploymentSummary {
 }
 
 pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
+    deploy_with_policy(repository, &CapabilityPolicy::deny_all())
+}
+
+pub fn deploy_with_policy(
+    repository: &Path,
+    policy: &CapabilityPolicy,
+) -> io::Result<DeploymentSummary> {
     let services = pipeline::analyze(repository)?;
     let output = repository.join(".autowasm");
     let staging = repository.join(".autowasm.staging");
@@ -51,7 +59,7 @@ pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
     let mut unsupported = 0;
 
     for service in &services {
-        let result = compile_and_write(service, &staging);
+        let result = compile_and_write(service, &staging, policy);
         let (artifact, reason) = match result {
             Ok(artifact) => {
                 compiled += 1;
@@ -106,10 +114,14 @@ pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
     })
 }
 
-fn compile_and_write(service: &Service, output: &Path) -> io::Result<String> {
+fn compile_and_write(
+    service: &Service,
+    output: &Path,
+    policy: &CapabilityPolicy,
+) -> io::Result<String> {
     let service_directory = output.join("services").join(&service.name);
     fs::create_dir_all(&service_directory)?;
-    let wasm = compiler::compile_service(service)?;
+    let wasm = compiler::compile_service_with_policy(service, policy)?;
     fs::write(service_directory.join("service.wasm"), wasm)?;
 
     let metadata = serde_json::json!({
