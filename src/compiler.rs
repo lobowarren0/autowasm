@@ -1,19 +1,35 @@
 use std::io;
 
+use crate::capability::CapabilityPolicy;
 use crate::service::Service;
 use serde_json::{Map, Number, Value};
 
 pub fn compile_service(service: &Service) -> io::Result<Vec<u8>> {
-    let wat = generate_wat(service)?;
+    compile_service_with_policy(service, &CapabilityPolicy::deny_all())
+}
+
+pub fn compile_service_with_policy(
+    service: &Service,
+    policy: &CapabilityPolicy,
+) -> io::Result<Vec<u8>> {
+    let wat = generate_wat(service, policy)?;
 
     wat::parse_str(&wat).map_err(|error| io::Error::other(error.to_string()))
 }
 
-fn generate_wat(service: &Service) -> io::Result<String> {
-    if !service.capabilities.is_empty() {
-        return Err(io::Error::other(
-            "services with capabilities are not supported by the initial compiler",
-        ));
+fn generate_wat(service: &Service, policy: &CapabilityPolicy) -> io::Result<String> {
+    let unsupported = service
+        .capabilities
+        .iter()
+        .filter(|capability| !policy.allows(capability))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if !unsupported.is_empty() {
+        return Err(io::Error::other(format!(
+            "unsupported capabilities: {}",
+            unsupported.join(", ")
+        )));
     }
 
     if let Some(dynamic) = infer_dynamic_response(service)? {
@@ -511,6 +527,25 @@ mod tests {
         let error = compile_service(&service).unwrap_err();
 
         assert!(error.to_string().contains("capabilities"));
+    }
+
+    #[test]
+    fn applies_configured_capability_policy() {
+        let service = Service::new(
+            "get-hello".to_string(),
+            "GET".to_string(),
+            "/hello".to_string(),
+            r#"(c) => {
+  return c.json({ message: "hello" });
+}"#
+            .to_string(),
+            vec![Capability::Network],
+        );
+        let policy = CapabilityPolicy::allowing([Capability::Network]);
+
+        let wasm = compile_service_with_policy(&service, &policy).unwrap();
+
+        assert_eq!(&wasm[0..4], b"\0asm");
     }
 
     #[test]

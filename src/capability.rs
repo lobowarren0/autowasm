@@ -6,6 +6,27 @@ pub enum Capability {
     Database,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapabilityPolicy {
+    allowed: Vec<Capability>,
+}
+
+impl CapabilityPolicy {
+    pub fn deny_all() -> Self {
+        Self::default()
+    }
+
+    pub fn allowing(capabilities: impl IntoIterator<Item = Capability>) -> Self {
+        Self {
+            allowed: capabilities.into_iter().collect(),
+        }
+    }
+
+    pub fn allows(&self, capability: &Capability) -> bool {
+        self.allowed.iter().any(|allowed| allowed == capability)
+    }
+}
+
 impl std::fmt::Display for Capability {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
@@ -92,6 +113,19 @@ mod tests {
         );
 
         assert!(capabilities.is_empty());
+    }
+
+    #[test]
+    fn denies_capabilities_by_default() {
+        assert!(!CapabilityPolicy::deny_all().allows(&Capability::Network));
+    }
+
+    #[test]
+    fn allows_configured_capabilities() {
+        let policy = CapabilityPolicy::allowing([Capability::Network]);
+
+        assert!(policy.allows(&Capability::Network));
+        assert!(!policy.allows(&Capability::Filesystem));
     }
 }
 
