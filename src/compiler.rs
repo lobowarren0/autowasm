@@ -4,6 +4,7 @@ use crate::capability::CapabilityPolicy;
 use crate::service::Service;
 use serde_json::{Map, Number, Value};
 
+#[allow(dead_code)]
 pub fn compile_service(service: &Service) -> io::Result<Vec<u8>> {
     compile_service_with_policy(service, &CapabilityPolicy::deny_all())
 }

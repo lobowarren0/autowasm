@@ -70,7 +70,11 @@ fn deploy_command(args: &[String]) {
     println!("Language: {}", detection.language);
     println!("Framework: {framework}");
 
-    let summary = match deployment::deploy_with_policy(repository, &policy) {
+    let summary = match if args.len() == 3 {
+        deployment::deploy(repository)
+    } else {
+        deployment::deploy_with_policy(repository, &policy)
+    } {
         Ok(summary) => summary,
         Err(error) => {
             eprintln!("Deployment error: {error}");
