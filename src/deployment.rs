@@ -125,8 +125,8 @@ mod tests {
         let repository = Path::new("fixtures/hono-app");
         let summary = deploy(repository).expect("fixture should deploy");
 
-        assert_eq!(summary.services, 6);
-        assert_eq!(summary.compiled, 5);
+        assert_eq!(summary.services, 7);
+        assert_eq!(summary.compiled, 6);
         assert_eq!(summary.unsupported, 1);
         assert!(
             summary
@@ -157,6 +157,24 @@ mod tests {
                     && service["artifact"].is_null()
                     && service["reason"].as_str().unwrap().contains("capabilities"))
         );
+
+        let hello_response = crate::runtime::execute_request(
+            &summary.output.join("services/get-hello/service.wasm"),
+            &crate::abi::Request::new("GET", "/hello", ""),
+        )
+        .expect("packaged hello service should execute");
+        assert_eq!(hello_response.status, 200);
+        assert_eq!(hello_response.body, r#"{"message":"hello"}"#);
+
+        let user_response = crate::runtime::execute_request(
+            &summary
+                .output
+                .join("services/get-users-id-details/service.wasm"),
+            &crate::abi::Request::new("GET", "/users/123/details", ""),
+        )
+        .expect("packaged parameter service should execute");
+        assert_eq!(user_response.status, 200);
+        assert_eq!(user_response.body, r#"{"id":"123"}"#);
 
         let _ = fs::remove_dir_all(summary.output);
     }
