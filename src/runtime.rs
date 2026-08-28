@@ -165,4 +165,29 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "ok");
     }
+
+    #[test]
+    fn compiles_service_and_executes_request() {
+        let service = crate::service::Service::new(
+            "get-hello".to_string(),
+            "GET".to_string(),
+            "/hello".to_string(),
+            r#"(c) => {
+  return c.json({ message: "hello", active: true });
+}"#
+            .to_string(),
+            vec![],
+        );
+
+        let wasm = crate::compiler::compile_service(&service).expect("service should compile");
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let module_path = temp_dir.path().join("service.wasm");
+        fs::write(&module_path, wasm).expect("temporary WASM module should be written");
+
+        let request = crate::abi::Request::new("GET", "/hello", "");
+        let response = execute_request(&module_path, &request).expect("request should execute");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, r#"{"active":true,"message":"hello"}"#);
+    }
 }
