@@ -115,8 +115,6 @@ fn unpack_pointer_length(packed: i64) -> io::Result<(u32, u32)> {
             "invalid packed response pointer and length",
         ));
     }
-
-    let packed = packed as u64;
     let pointer = (packed >> 32) as u32;
     let length = packed as u32;
 
@@ -296,6 +294,34 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, r#"{"id":"123"}"#);
+    }
+
+    #[test]
+    fn compiles_and_executes_multiple_route_parameters() {
+        let service = crate::service::Service::new(
+            "get-users-user-id-posts-post-id".to_string(),
+            "GET".to_string(),
+            "/users/:userId/posts/:postId".to_string(),
+            r#"(c) => {
+    return c.json({ a: c.req.param("userId"), b: c.req.param("postId") });
+}"#
+            .to_string(),
+            vec![],
+        );
+
+        let wasm = crate::compiler::compile_service(&service).expect("service should compile");
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let module_path = temp_dir.path().join("service.wasm");
+        fs::write(&module_path, wasm).expect("temporary WASM module should be written");
+
+        let response = execute_request(
+            &module_path,
+            &crate::abi::Request::new("GET", "/users/42/posts/99", ""),
+        )
+        .expect("request should execute");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, r#"{"a":"42","b":"99"}"#);
     }
 
     #[test]

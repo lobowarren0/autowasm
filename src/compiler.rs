@@ -97,32 +97,51 @@ fn lower_handler(service: &Service) -> io::Result<HandlerResponse> {
 
 struct DynamicResponse {
     route_prefix: String,
+    route_separators: Vec<String>,
     response_prefix: String,
-    response_suffix: String,
+    response_segments: Vec<String>,
 }
 
 fn infer_dynamic_response(service: &Service) -> io::Result<Option<DynamicResponse>> {
     let marker = "c.req.param(\"";
-    let Some(marker_start) = service.handler.find(marker) else {
+    let mut parameter_names = Vec::new();
+    let mut search_start = 0;
+    while let Some(relative_start) = service.handler[search_start..].find(marker) {
+        let marker_start = search_start + relative_start;
+        let name_start = marker_start + marker.len();
+        let name_end = service.handler[name_start..]
+            .find("\")")
+            .map(|offset| name_start + offset)
+            .ok_or_else(|| io::Error::other("malformed route parameter expression"))?;
+        parameter_names.push(service.handler[name_start..name_end].to_string());
+        search_start = name_end + 2;
+    }
+
+    if parameter_names.is_empty() {
         return Ok(None);
-    };
-    let name_start = marker_start + marker.len();
-    let name_end = service.handler[name_start..]
-        .find("\")")
-        .map(|offset| name_start + offset)
-        .ok_or_else(|| io::Error::other("malformed route parameter expression"))?;
-    let parameter_name = &service.handler[name_start..name_end];
-    let route_marker = format!(":{parameter_name}");
-    let route_parameter_start = service
-        .path
-        .find(&route_marker)
-        .ok_or_else(|| io::Error::other("route parameter is not present in service path"))?;
-    let route_prefix = service.path[..route_parameter_start].to_string();
-    if route_prefix.is_empty()
-        || service.path[route_parameter_start + route_marker.len()..].contains(':')
-    {
+    }
+
+    let mut route_cursor = 0;
+    let mut route_prefix = None;
+    let mut route_separators = Vec::new();
+    for (index, parameter_name) in parameter_names.iter().enumerate() {
+        let route_marker = format!(":{parameter_name}");
+        let marker_start = service.path[route_cursor..]
+            .find(&route_marker)
+            .map(|offset| route_cursor + offset)
+            .ok_or_else(|| io::Error::other("route parameter is not present in service path"))?;
+        if index == 0 {
+            route_prefix = Some(service.path[..marker_start].to_string());
+        } else {
+            route_separators.push(service.path[route_cursor..marker_start].to_string());
+        }
+        route_cursor = marker_start + route_marker.len();
+    }
+    route_separators.push(service.path[route_cursor..].to_string());
+    let route_prefix = route_prefix.unwrap_or_default();
+    if route_prefix.is_empty() {
         return Err(io::Error::other(
-            "only one non-root route parameter is supported",
+            "route parameter must follow a route prefix",
         ));
     }
 
@@ -136,50 +155,129 @@ fn infer_dynamic_response(service: &Service) -> io::Result<Option<DynamicRespons
         .map(|offset| json_start + offset)
         .ok_or_else(|| io::Error::other("malformed c.json response"))?;
     let expression = service.handler[json_start..json_end].trim();
-    let dynamic_expression = format!("c.req.param(\"{parameter_name}\")");
-    let template = expression.replace(&dynamic_expression, "\"__AUTOWASM_PARAM__\"");
+    let mut template = expression.to_string();
+    for (index, parameter_name) in parameter_names.iter().enumerate() {
+        let dynamic_expression = format!("c.req.param(\"{parameter_name}\")");
+        template = template.replace(
+            &dynamic_expression,
+            &format!("\"__AUTOWASM_PARAM_{index}__\""),
+        );
+    }
     let body = parse_json_literal(&template)?.to_string();
-    let value_marker = "\"__AUTOWASM_PARAM__\"";
-    let value_start = body
-        .find(value_marker)
-        .ok_or_else(|| io::Error::other("route parameter must be a JSON string value"))?;
+    let mut marker_positions = Vec::new();
+    let mut marker_search_start = 0;
+    for index in 0..parameter_names.len() {
+        let marker = format!("\"__AUTOWASM_PARAM_{index}__\"");
+        let value_start = body[marker_search_start..]
+            .find(&marker)
+            .map(|offset| marker_search_start + offset)
+            .ok_or_else(|| io::Error::other("route parameter must be a JSON string value"))?;
+        marker_positions.push((value_start, marker.len()));
+        marker_search_start = value_start + marker.len();
+    }
     let wrapper_prefix = r#"{"status":200,"body":""#;
+    let first_marker = marker_positions[0].0;
+    let response_prefix = format!(
+        "{}{}",
+        wrapper_prefix,
+        escape_json_string(&format!("{}\"", &body[..first_marker]))
+    );
     let wrapper_suffix = r#""}"#;
+    let mut response_segments = Vec::new();
+    for (index, (value_start, marker_length)) in marker_positions.iter().enumerate() {
+        let value_end = value_start + marker_length;
+        let segment_end = marker_positions
+            .get(index + 1)
+            .map(|(next_start, _)| *next_start)
+            .unwrap_or(body.len());
+        let suffix = if index + 1 == marker_positions.len() {
+            wrapper_suffix
+        } else {
+            "\\\""
+        };
+        response_segments.push(format!(
+            "{}{}",
+            escape_json_string(&format!("\"{}", &body[value_end..segment_end])),
+            suffix
+        ));
+    }
 
     Ok(Some(DynamicResponse {
         route_prefix,
-        response_prefix: format!(
-            "{}{}",
-            wrapper_prefix,
-            escape_json_string(&format!("{}\"", &body[..value_start]))
-        ),
-        response_suffix: format!(
-            "{}{}",
-            escape_json_string(&format!("\"{}", &body[value_start + value_marker.len()..])),
-            wrapper_suffix
-        ),
+        route_separators,
+        response_prefix,
+        response_segments,
     }))
 }
 
 fn dynamic_wat(service: &Service, response: &DynamicResponse) -> String {
     let prefix_length = response.response_prefix.len();
-    let suffix_length = response.response_suffix.len();
     let path_offset = format!("{{\"method\":\"{}\",\"path\":\"", service.method).len();
-    let suffix_stores = response
-                .response_suffix
-                .bytes()
-                .enumerate()
-                .map(|(offset, byte)| {
-                        format!(
-                                "    local.get $output\n    i32.const {offset}\n    i32.add\n    i32.const {byte}\n    i32.store8\n"
-                        )
-                })
-                .collect::<String>();
-    let response_length = format!(
-        "(i32.sub (i32.add (local.get $output) (i32.const {suffix_length})) (i32.const 2048))"
-    );
+    let mut parameter_blocks = String::new();
+    for (index, (route_separator, response_segment)) in response
+        .route_separators
+        .iter()
+        .zip(&response.response_segments)
+        .enumerate()
+    {
+        let static_stores = response_segment
+            .bytes()
+            .enumerate()
+            .map(|(offset, byte)| {
+                format!(
+                    "        local.get $output\n        i32.const {offset}\n        i32.add\n        i32.const {byte}\n        i32.store8\n"
+                )
+            })
+            .collect::<String>();
+        parameter_blocks.push_str(&format!(
+            r#"        block $done{index}
+            loop $copy{index}
+                local.get $input
+                local.get $end
+                i32.ge_u
+                br_if $done{index}
+                local.get $input
+                i32.load8_u
+                i32.const 34
+                i32.eq
+                br_if $done{index}
+                local.get $input
+                i32.load8_u
+                i32.const 47
+                i32.eq
+                br_if $done{index}
+                local.get $output
+                local.get $input
+                i32.load8_u
+                i32.store8
+                local.get $input
+                i32.const 1
+                i32.add
+                local.set $input
+                local.get $output
+                i32.const 1
+                i32.add
+                local.set $output
+                br $copy{index}
+            end
+        end
+{static_stores}        local.get $output
+        i32.const {segment_length}
+        i32.add
+        local.set $output
+        local.get $input
+        i32.const {route_separator_length}
+        i32.add
+        local.set $input
+"#,
+            static_stores = static_stores,
+            segment_length = response_segment.len(),
+            route_separator_length = route_separator.len(),
+        ));
+    }
+    let response_length = "(i32.sub (local.get $output) (i32.const 2048))";
 
-    format!(
+    let wat = format!(
         r#"(module
     (memory (export "memory") 1)
     (global $heap (mut i32) (i32.const 1024))
@@ -213,38 +311,7 @@ fn dynamic_wat(service: &Service, response: &DynamicResponse) -> String {
         i32.const {prefix_length}
         i32.add
         local.set $output
-        block $done
-            loop $copy
-                local.get $input
-                local.get $end
-                i32.ge_u
-                br_if $done
-                local.get $input
-                i32.load8_u
-                i32.const 34
-                i32.eq
-                br_if $done
-                local.get $input
-                i32.load8_u
-                i32.const 47
-                i32.eq
-                br_if $done
-                local.get $output
-                local.get $input
-                i32.load8_u
-                i32.store8
-                local.get $input
-                i32.const 1
-                i32.add
-                local.set $input
-                local.get $output
-                i32.const 1
-                i32.add
-                local.set $output
-                br $copy
-            end
-        end
-{suffix_stores}    i32.const 2048
+{parameter_blocks}    i32.const 2048
         i64.extend_i32_u
         i64.const 32
         i64.shl
@@ -257,9 +324,10 @@ fn dynamic_wat(service: &Service, response: &DynamicResponse) -> String {
         path_offset = path_offset,
         route_prefix_length = response.route_prefix.len(),
         prefix_length = prefix_length,
-        suffix_stores = suffix_stores,
         response_length = response_length,
-    )
+        parameter_blocks = parameter_blocks,
+    );
+    wat
 }
 
 fn infer_static_response(handler: &str) -> io::Result<(u16, String)> {
