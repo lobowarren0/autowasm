@@ -256,4 +256,32 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, r#"{"id":"123"}"#);
     }
+
+    #[test]
+    fn compiles_and_executes_static_text_response() {
+        let service = crate::service::Service::new(
+            "get-health".to_string(),
+            "GET".to_string(),
+            "/health".to_string(),
+            r#"(c) => {
+  return c.text("ok");
+}"#
+            .to_string(),
+            vec![],
+        );
+
+        let wasm = crate::compiler::compile_service(&service).expect("service should compile");
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let module_path = temp_dir.path().join("service.wasm");
+        fs::write(&module_path, wasm).expect("temporary WASM module should be written");
+
+        let response = execute_request(
+            &module_path,
+            &crate::abi::Request::new("GET", "/health", ""),
+        )
+        .expect("request should execute");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "ok");
+    }
 }

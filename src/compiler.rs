@@ -241,7 +241,15 @@ fn dynamic_wat(service: &Service, response: &DynamicResponse) -> String {
 }
 
 fn infer_static_body(handler: &str) -> io::Result<String> {
-    let marker = "c.json(";
+    let (marker, expects_string) = if handler.contains("c.json(") {
+        ("c.json(", false)
+    } else if handler.contains("c.text(") {
+        ("c.text(", true)
+    } else {
+        return Err(io::Error::other(
+            "could not find a supported static response",
+        ));
+    };
 
     let start = handler
         .find(marker)
@@ -265,7 +273,16 @@ fn infer_static_body(handler: &str) -> io::Result<String> {
         ));
     }
 
-    parse_json_literal(value).map(|value| value.to_string())
+    let parsed = parse_json_literal(value)?;
+    if expects_string && !parsed.is_string() {
+        return Err(io::Error::other("c.text requires a static string literal"));
+    }
+
+    Ok(if expects_string {
+        parsed.as_str().unwrap_or_default().to_string()
+    } else {
+        parsed.to_string()
+    })
 }
 
 fn parse_json_literal(source: &str) -> io::Result<Value> {
@@ -571,5 +588,23 @@ mod tests {
         let error = parse_json_literal("{ message: greeting }").unwrap_err();
 
         assert!(error.to_string().contains("unsupported expression"));
+    }
+
+    #[test]
+    fn compiles_static_text_response() {
+        let service = Service::new(
+            "get-health".to_string(),
+            "GET".to_string(),
+            "/health".to_string(),
+            r#"(c) => {
+  return c.text("ok");
+}"#
+            .to_string(),
+            vec![],
+        );
+
+        let wasm = compile_service(&service).unwrap();
+
+        assert_eq!(&wasm[0..4], b"\0asm");
     }
 }
