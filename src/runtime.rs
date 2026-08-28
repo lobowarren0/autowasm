@@ -3,6 +3,9 @@ use std::path::Path;
 
 use wasmtime::{Engine, Instance, Module, Store};
 
+const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 pub fn execute_module(module_path: &Path) -> io::Result<i32> {
     let engine = Engine::default();
 
@@ -51,6 +54,12 @@ pub fn execute_request(
     let request_bytes =
         serde_json::to_vec(request).map_err(|error| io::Error::other(error.to_string()))?;
 
+    if request_bytes.len() > MAX_REQUEST_BYTES {
+        return Err(io::Error::other(
+            "request exceeds the maximum supported size",
+        ));
+    }
+
     let request_len =
         i32::try_from(request_bytes.len()).map_err(|_| io::Error::other("request is too large"))?;
 
@@ -69,12 +78,10 @@ pub fn execute_request(
         .call(&mut store, (request_ptr, request_len))
         .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let response_ptr = (packed >> 32) as i32;
-    let response_len = packed as i32;
+    let (response_ptr, response_len) = unpack_pointer_length(packed)?;
 
     let response_ptr_usize =
         usize::try_from(response_ptr).map_err(|_| io::Error::other("invalid response pointer"))?;
-
     let response_len_usize =
         usize::try_from(response_len).map_err(|_| io::Error::other("invalid response length"))?;
 
@@ -85,6 +92,26 @@ pub fn execute_request(
         .map_err(|error| io::Error::other(error.to_string()))?;
 
     serde_json::from_slice(&response_bytes).map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn unpack_pointer_length(packed: i64) -> io::Result<(u32, u32)> {
+    if packed < 0 {
+        return Err(io::Error::other(
+            "invalid packed response pointer and length",
+        ));
+    }
+
+    let packed = packed as u64;
+    let pointer = (packed >> 32) as u32;
+    let length = packed as u32;
+
+    if length as usize > MAX_RESPONSE_BYTES {
+        return Err(io::Error::other(
+            "response exceeds the maximum supported size",
+        ));
+    }
+
+    Ok((pointer, length))
 }
 
 pub fn compile_wat(wat_source: &str) -> io::Result<Vec<u8>> {
@@ -164,6 +191,18 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "ok");
+    }
+
+    #[test]
+    fn rejects_invalid_packed_response_values() {
+        assert!(unpack_pointer_length(-1).is_err());
+        assert!(
+            unpack_pointer_length(((2048_i64) << 32) | ((MAX_RESPONSE_BYTES as i64) + 1)).is_err()
+        );
+        assert_eq!(
+            unpack_pointer_length((2048_i64 << 32) | 26).unwrap(),
+            (2048, 26)
+        );
     }
 
     #[test]
