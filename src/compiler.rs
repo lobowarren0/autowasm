@@ -33,11 +33,15 @@ fn generate_wat(service: &Service, policy: &CapabilityPolicy) -> io::Result<Stri
         )));
     }
 
-    if let Some(dynamic) = infer_dynamic_response(service)? {
+    let response = lower_handler(service)?;
+
+    if let HandlerResponse::Dynamic(dynamic) = response {
         return Ok(dynamic_wat(service, &dynamic));
     }
 
-    let body = infer_static_body(&service.handler)?;
+    let HandlerResponse::Static(body) = response else {
+        unreachable!("dynamic handler response returned above");
+    };
 
     let response = format!(r#"{{"status":200,"body":"{}"}}"#, escape_json_string(&body));
 
@@ -72,6 +76,21 @@ fn generate_wat(service: &Service, policy: &CapabilityPolicy) -> io::Result<Stri
         escaped_response = escape_wat_string(&response),
         packed = pack_pointer_length(2048, response_len),
     ))
+}
+
+enum HandlerResponse {
+    Static(String),
+    Dynamic(DynamicResponse),
+}
+
+fn lower_handler(service: &Service) -> io::Result<HandlerResponse> {
+    if let Some(dynamic) = infer_dynamic_response(service)? {
+        return Ok(HandlerResponse::Dynamic(dynamic));
+    }
+
+    Ok(HandlerResponse::Static(infer_static_body(
+        &service.handler,
+    )?))
 }
 
 struct DynamicResponse {
@@ -589,6 +608,33 @@ mod tests {
         let error = parse_json_literal("{ message: greeting }").unwrap_err();
 
         assert!(error.to_string().contains("unsupported expression"));
+    }
+
+    #[test]
+    fn lowers_static_and_dynamic_handlers_to_response_ir() {
+        let static_service = Service::new(
+            "get-hello".to_string(),
+            "GET".to_string(),
+            "/hello".to_string(),
+            r#"(c) => c.json({ message: "hello" })"#.to_string(),
+            vec![],
+        );
+        let dynamic_service = Service::new(
+            "get-users-id".to_string(),
+            "GET".to_string(),
+            "/users/:id".to_string(),
+            r#"(c) => c.json({ id: c.req.param("id") })"#.to_string(),
+            vec![],
+        );
+
+        assert!(matches!(
+            lower_handler(&static_service).unwrap(),
+            HandlerResponse::Static(_)
+        ));
+        assert!(matches!(
+            lower_handler(&dynamic_service).unwrap(),
+            HandlerResponse::Dynamic(_)
+        ));
     }
 
     #[test]
