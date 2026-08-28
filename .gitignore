@@ -31,3 +31,4 @@ fixtures/wasm/*.wasm
 
 # Local AutoWASM deployment artifacts
 **/.autowasm/
+**/.autowasm.staging/

@@ -39,18 +39,19 @@ pub struct DeploymentSummary {
 pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
     let services = pipeline::analyze(repository)?;
     let output = repository.join(".autowasm");
+    let staging = repository.join(".autowasm.staging");
 
-    if output.exists() {
-        fs::remove_dir_all(&output)?;
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
     }
-    fs::create_dir_all(output.join("services"))?;
+    fs::create_dir_all(staging.join("services"))?;
 
     let mut manifest_services = Vec::new();
     let mut compiled = 0;
     let mut unsupported = 0;
 
     for service in &services {
-        let result = compile_and_write(service, &output);
+        let result = compile_and_write(service, &staging);
         let (artifact, reason) = match result {
             Ok(artifact) => {
                 compiled += 1;
@@ -84,7 +85,18 @@ pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
     };
     let manifest_json = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    fs::write(output.join("manifest.json"), manifest_json)?;
+    fs::write(staging.join("manifest.json"), manifest_json)?;
+
+    if output.exists() {
+        if let Err(error) = fs::remove_dir_all(&output) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    }
+    if let Err(error) = fs::rename(&staging, &output) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
 
     Ok(DeploymentSummary {
         services: services.len(),
@@ -212,5 +224,21 @@ mod tests {
         assert_eq!(user_response.body, r#"{"id":"123"}"#);
 
         let _ = fs::remove_dir_all(summary.output);
+    }
+
+    #[test]
+    fn preserves_invalid_existing_output_on_replacement_failure() {
+        let repository = tempfile::tempdir().expect("temporary repository should be created");
+        fs::write(
+            repository.path().join("index.js"),
+            "const app = {}; app.get(\"/hello\", (c) => c.json({ ok: true }));",
+        )
+        .expect("source should be written");
+        let output = repository.path().join(".autowasm");
+        fs::write(&output, "existing output").expect("existing output should be written");
+
+        assert!(deploy(repository.path()).is_err());
+        assert!(output.is_file());
+        assert!(!repository.path().join(".autowasm.staging").exists());
     }
 }
