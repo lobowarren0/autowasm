@@ -1,7 +1,8 @@
 # AutoWASM
 
-AutoWASM analyzes a supported web application, discovers Hono routes, compiles
-supported handlers to WebAssembly, and packages the result for local execution.
+AutoWASM analyzes a supported web application, discovers Hono routes from
+TypeScript or JavaScript, compiles supported handlers to WebAssembly, and
+packages the result for local execution.
 
 ## Quick start
 

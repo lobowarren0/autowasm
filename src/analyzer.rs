@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter_javascript::LANGUAGE as LANGUAGE_JAVASCRIPT;
 use tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,8 +18,19 @@ pub fn discover_routes(source_path: &Path) -> io::Result<Vec<Route>> {
 
     let mut parser = Parser::new();
 
+    let language = if matches!(
+        source_path
+            .extension()
+            .and_then(|extension| extension.to_str()),
+        Some("js") | Some("jsx")
+    ) {
+        LANGUAGE_JAVASCRIPT.into()
+    } else {
+        LANGUAGE_TYPESCRIPT.into()
+    };
+
     parser
-        .set_language(&LANGUAGE_TYPESCRIPT.into())
+        .set_language(&language)
         .map_err(|error| io::Error::other(error.to_string()))?;
 
     let tree = parser
@@ -26,7 +38,7 @@ pub fn discover_routes(source_path: &Path) -> io::Result<Vec<Route>> {
         .ok_or_else(|| io::Error::other("failed to parse source"))?;
 
     let query = Query::new(
-        &LANGUAGE_TYPESCRIPT.into(),
+        &language,
         r#"
         (call_expression
             function: (member_expression
@@ -92,12 +104,17 @@ mod tests {
 
     impl TestSource {
         fn new(source: &str) -> Self {
+            Self::with_extension(source, "ts")
+        }
+
+        fn with_extension(source: &str, extension: &str) -> Self {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
 
-            let path = std::env::temp_dir().join(format!("autowasm-analyzer-{timestamp}.ts"));
+            let path =
+                std::env::temp_dir().join(format!("autowasm-analyzer-{timestamp}.{extension}"));
 
             fs::write(&path, source).unwrap();
 
@@ -212,5 +229,61 @@ mod tests {
         assert_eq!(routes[0].method, "GET");
         assert_eq!(routes[0].path, "/external");
         assert!(routes[0].handler.contains("fetch"));
+    }
+
+    #[test]
+    fn discovers_javascript_routes_and_parameters() {
+        let source = TestSource::with_extension(
+            r#"
+                        import { Hono } from "hono";
+                        const app = new Hono();
+
+                        app.get("/hello", (c) => {
+                            return c.json({ message: "hello" });
+                        });
+                        app.get("/health", (c) => {
+                            return c.json({ status: "ok" });
+                        });
+                        app.post("/users", (c) => {
+                            return c.json({ created: true });
+                        });
+                        app.delete("/users/:id", (c) => {
+                            return c.json({ id: c.req.param("id") });
+                        });
+                        "#,
+            "js",
+        );
+
+        let routes = discover_routes(&source.path).unwrap();
+
+        assert_eq!(routes.len(), 4);
+        assert_eq!(routes[0].method, "GET");
+        assert_eq!(routes[0].path, "/hello");
+        assert_eq!(routes[1].path, "/health");
+        assert_eq!(routes[2].method, "POST");
+        assert_eq!(routes[3].path, "/users/:id");
+        assert!(routes[3].handler.contains("c.req.param"));
+    }
+
+    #[test]
+    fn discovers_javascript_network_capability_handler() {
+        let source = TestSource::with_extension(
+            r#"
+                        const app = new Hono();
+                        app.get("/external", async (c) => {
+                            const response = await fetch("https://example.com");
+                            return c.json(await response.json());
+                        });
+                        "#,
+            "js",
+        );
+
+        let routes = discover_routes(&source.path).unwrap();
+
+        assert_eq!(routes.len(), 1);
+        assert!(
+            crate::capability::detect(&routes[0].handler)
+                .contains(&crate::capability::Capability::Network)
+        );
     }
 }

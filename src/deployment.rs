@@ -178,4 +178,39 @@ mod tests {
 
         let _ = fs::remove_dir_all(summary.output);
     }
+
+    #[test]
+    fn packages_and_executes_javascript_hono_services() {
+        let repository = Path::new("fixtures/hono-js");
+        let services = pipeline::analyze(repository).expect("JavaScript fixture should analyze");
+
+        assert_eq!(services.len(), 3);
+        assert_eq!(services[0].name, "get-hello");
+        assert_eq!(services[1].name, "get-health");
+        assert_eq!(services[2].name, "get-users-id");
+
+        let summary = deploy(repository).expect("JavaScript fixture should deploy");
+
+        assert_eq!(summary.services, 3);
+        assert_eq!(summary.compiled, 3);
+        assert_eq!(summary.unsupported, 0);
+
+        let hello_response = crate::runtime::execute_request(
+            &summary.output.join("services/get-hello/service.wasm"),
+            &crate::abi::Request::new("GET", "/hello", ""),
+        )
+        .expect("packaged JavaScript hello service should execute");
+        assert_eq!(hello_response.status, 200);
+        assert_eq!(hello_response.body, r#"{"message":"hello"}"#);
+
+        let user_response = crate::runtime::execute_request(
+            &summary.output.join("services/get-users-id/service.wasm"),
+            &crate::abi::Request::new("GET", "/users/123", ""),
+        )
+        .expect("packaged JavaScript parameter service should execute");
+        assert_eq!(user_response.status, 200);
+        assert_eq!(user_response.body, r#"{"id":"123"}"#);
+
+        let _ = fs::remove_dir_all(summary.output);
+    }
 }
