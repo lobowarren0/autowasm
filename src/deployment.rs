@@ -35,6 +35,16 @@ pub struct DeploymentSummary {
     pub compiled: usize,
     pub unsupported: usize,
     pub output: PathBuf,
+    pub results: Vec<DeploymentResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeploymentResult {
+    pub name: String,
+    pub method: String,
+    pub path: String,
+    pub artifact: Option<String>,
+    pub reason: Option<String>,
 }
 
 pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
@@ -57,6 +67,7 @@ pub fn deploy_with_policy(
     let mut manifest_services = Vec::new();
     let mut compiled = 0;
     let mut unsupported = 0;
+    let mut results = Vec::new();
 
     for service in &services {
         let result = compile_and_write(service, &staging, policy);
@@ -70,6 +81,14 @@ pub fn deploy_with_policy(
                 (None, Some(error.to_string()))
             }
         };
+
+        results.push(DeploymentResult {
+            name: service.name.clone(),
+            method: service.method.clone(),
+            path: service.path.clone(),
+            artifact: artifact.clone(),
+            reason: reason.clone(),
+        });
 
         manifest_services.push(ManifestService {
             name: service.name.clone(),
@@ -111,6 +130,7 @@ pub fn deploy_with_policy(
         compiled,
         unsupported,
         output,
+        results,
     })
 }
 
@@ -152,6 +172,16 @@ mod tests {
         assert_eq!(summary.services, 7);
         assert_eq!(summary.compiled, 6);
         assert_eq!(summary.unsupported, 1);
+        assert_eq!(summary.results.len(), 7);
+        assert!(summary.results.iter().any(|result| {
+            result.name == "get-external"
+                && result.artifact.is_none()
+                && result
+                    .reason
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("network")
+        }));
         assert!(
             summary
                 .output

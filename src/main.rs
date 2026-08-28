@@ -88,6 +88,19 @@ fn deploy_command(args: &[String]) {
     println!("  Compiled: {}", summary.compiled);
     println!("  Unsupported: {}", summary.unsupported);
     println!("  Output: {}", summary.output.display());
+    println!();
+    println!("Services:");
+    for result in &summary.results {
+        let status = if result.artifact.is_some() {
+            "built"
+        } else {
+            "unsupported"
+        };
+        println!("  {} {}: {}", result.method, result.path, status);
+        if let Some(reason) = &result.reason {
+            println!("    Reason: {reason}");
+        }
+    }
 }
 
 fn parse_capability_policy(args: &[String]) -> Result<capability::CapabilityPolicy, String> {
