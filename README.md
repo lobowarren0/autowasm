@@ -56,3 +56,34 @@ autowasm invoke <wasm-path> <method> <path> [body]
 This is a local packaging MVP. It does not deploy to a cloud provider.
 Capability flags configure the policy boundary; capability-specific host
 implementations remain unsupported until their runtime integration is added.
+
+## Cloudflare deployment
+
+Cloudflare Workers is the first cloud provider supported. AutoWASM packages
+all compiled services into one module Worker and adds a route table in a thin
+JavaScript adapter. Each request is converted to the existing AutoWASM JSON
+request ABI, executed by the selected Wasm service, and converted back to an
+HTTP response.
+
+Create a Cloudflare API token with Workers Scripts Write permission, then set:
+
+```text
+CLOUDFLARE_API_TOKEN=<token>
+CLOUDFLARE_ACCOUNT_ID=<account-id>
+AUTOWASM_CLOUDFLARE_WORKER_NAME=<worker-name>
+```
+
+Deploy explicitly with:
+
+```text
+cargo run -- deploy fixtures/hono-js --provider cloudflare
+```
+
+The provider uses Cloudflare's Workers Script Upload API and updates the
+deterministic Worker name on repeated deployments. The API may return a
+deployment ID without a URL; in that case AutoWASM tells you to configure a
+Worker route or workers.dev subdomain rather than inventing an endpoint.
+
+Cloud deployment is opt-in, requires network access and credentials, and does
+not weaken capability policy. Unsupported services remain excluded from the
+uploaded Worker and remain listed in the local manifest with their reasons.

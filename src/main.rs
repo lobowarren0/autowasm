@@ -6,7 +6,9 @@ use std::str::FromStr;
 mod abi;
 mod analyzer;
 mod capability;
+mod cloudflare;
 mod compiler;
+mod deployer;
 mod deployment;
 mod detector;
 mod framework;
@@ -27,7 +29,8 @@ fn main() {
         _ => {
             eprintln!("Usage:");
             eprintln!("  autowasm analyze <repository-path>");
-            eprintln!("  autowasm deploy <repository-path>");
+            eprintln!("  autowasm deploy <repository-path> [--provider cloudflare]");
+            eprintln!("  autowasm deploy <repository-path> --provider cloudflare");
             eprintln!("  autowasm build <wat-path> <wasm-path>");
             eprintln!("  autowasm run <wasm-path>");
             eprintln!("  autowasm invoke <wasm-path> <method> <path> [body]");
@@ -45,6 +48,13 @@ fn deploy_command(args: &[String]) {
     let repository = Path::new(&args[2]);
     let policy = match parse_capability_policy(args) {
         Ok(policy) => policy,
+        Err(error) => {
+            eprintln!("Deployment option error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let provider = match parse_provider(args) {
+        Ok(provider) => provider,
         Err(error) => {
             eprintln!("Deployment option error: {error}");
             std::process::exit(1);
@@ -101,6 +111,39 @@ fn deploy_command(args: &[String]) {
             println!("    Reason: {reason}");
         }
     }
+
+    if provider.as_deref() == Some("cloudflare") {
+        let config = match cloudflare::CloudflareConfig::from_env() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("Cloudflare configuration error: {error}");
+                std::process::exit(1);
+            }
+        };
+        let deployer = match cloudflare::CloudflareDeployer::new(config) {
+            Ok(deployer) => deployer,
+            Err(error) => {
+                eprintln!("Cloudflare client error: {error}");
+                std::process::exit(1);
+            }
+        };
+        let artifact = deployer::DeploymentArtifact::from_directory(&summary.output);
+        let result = match deployer::Deployer::deploy(&deployer, &artifact) {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("Cloudflare deployment error: {error}");
+                std::process::exit(1);
+            }
+        };
+        println!();
+        println!("Cloudflare deployment:");
+        println!("  Deployment ID: {}", result.deployment_id);
+        if let Some(url) = result.url {
+            println!("  URL: {url}");
+        } else {
+            println!("  URL: unavailable from API response; configure a Worker route or subdomain");
+        }
+    }
 }
 
 fn parse_capability_policy(args: &[String]) -> Result<capability::CapabilityPolicy, String> {
@@ -109,6 +152,10 @@ fn parse_capability_policy(args: &[String]) -> Result<capability::CapabilityPoli
 
     while index < args.len() {
         if args.get(index).map(String::as_str) != Some("--allow-capability") {
+            if args.get(index).map(String::as_str) == Some("--provider") {
+                index += 2;
+                continue;
+            }
             return Err(format!("unknown option: {}", args[index]));
         }
         let value = args
@@ -119,6 +166,28 @@ fn parse_capability_policy(args: &[String]) -> Result<capability::CapabilityPoli
     }
 
     Ok(capability::CapabilityPolicy::allowing(allowed))
+}
+
+fn parse_provider(args: &[String]) -> Result<Option<String>, String> {
+    let mut provider = None;
+    let mut index = 3;
+    while index < args.len() {
+        if args.get(index).map(String::as_str) == Some("--provider") {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| "missing provider name".to_string())?;
+            if value != "cloudflare" {
+                return Err(format!("unsupported provider: {value}"));
+            }
+            provider = Some(value.clone());
+            index += 2;
+        } else if args.get(index).map(String::as_str) == Some("--allow-capability") {
+            index += 2;
+        } else {
+            return Err(format!("unknown option: {}", args[index]));
+        }
+    }
+    Ok(provider)
 }
 
 fn analyze_command(args: &[String]) {
@@ -300,5 +369,34 @@ mod tests {
         ];
 
         assert!(parse_capability_policy(&args).is_err());
+    }
+
+    #[test]
+    fn parses_cloudflare_provider() {
+        let args = vec![
+            "autowasm".to_string(),
+            "deploy".to_string(),
+            ".".to_string(),
+            "--provider".to_string(),
+            "cloudflare".to_string(),
+        ];
+
+        assert_eq!(
+            parse_provider(&args).unwrap().as_deref(),
+            Some("cloudflare")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_provider() {
+        let args = vec![
+            "autowasm".to_string(),
+            "deploy".to_string(),
+            ".".to_string(),
+            "--provider".to_string(),
+            "aws".to_string(),
+        ];
+
+        assert!(parse_provider(&args).is_err());
     }
 }
