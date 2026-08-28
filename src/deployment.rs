@@ -13,6 +13,8 @@ const ARTIFACT_VERSION: u32 = 1;
 #[derive(Debug, Serialize)]
 pub struct DeploymentManifest {
     pub version: u32,
+    pub compiler_version: &'static str,
+    pub runtime: &'static str,
     pub services: Vec<ManifestService>,
 }
 
@@ -76,6 +78,8 @@ pub fn deploy(repository: &Path) -> io::Result<DeploymentSummary> {
 
     let manifest = DeploymentManifest {
         version: ARTIFACT_VERSION,
+        compiler_version: env!("CARGO_PKG_VERSION"),
+        runtime: "wasmtime-48",
         services: manifest_services,
     };
     let manifest_json = serde_json::to_vec_pretty(&manifest)
@@ -98,6 +102,8 @@ fn compile_and_write(service: &Service, output: &Path) -> io::Result<String> {
 
     let metadata = serde_json::json!({
         "version": ARTIFACT_VERSION,
+        "compiler_version": env!("CARGO_PKG_VERSION"),
+        "runtime": "wasmtime-48",
         "name": service.name,
         "method": service.method,
         "path": service.path,
@@ -135,6 +141,22 @@ mod tests {
                 .is_file()
         );
         assert!(summary.output.join("manifest.json").is_file());
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(summary.output.join("manifest.json")).expect("manifest should be readable"),
+        )
+        .expect("manifest should contain valid JSON");
+        assert_eq!(manifest["version"], 1);
+        assert_eq!(manifest["runtime"], "wasmtime-48");
+        assert!(
+            manifest["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|service| service["name"] == "get-external"
+                    && service["artifact"].is_null()
+                    && service["reason"].as_str().unwrap().contains("capabilities"))
+        );
 
         let _ = fs::remove_dir_all(summary.output);
     }
