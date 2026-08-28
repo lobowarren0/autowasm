@@ -13,7 +13,7 @@ pub struct CapabilityPolicy {
 
 impl CapabilityPolicy {
     pub fn deny_all() -> Self {
-        Self::default()
+        Self::allowing(std::iter::empty())
     }
 
     pub fn allowing(capabilities: impl IntoIterator<Item = Capability>) -> Self {
