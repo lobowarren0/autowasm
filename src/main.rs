@@ -5,6 +5,8 @@ use std::path::Path;
 mod abi;
 mod analyzer;
 mod capability;
+mod compiler;
+mod deployment;
 mod detector;
 mod framework;
 mod pipeline;
@@ -17,18 +19,63 @@ fn main() {
 
     match args.get(1).map(String::as_str) {
         Some("analyze") => analyze_command(&args),
+        Some("deploy") => deploy_command(&args),
         Some("build") => build_command(&args),
         Some("run") => run_command(&args),
         Some("invoke") => invoke_command(&args),
         _ => {
             eprintln!("Usage:");
             eprintln!("  autowasm analyze <repository-path>");
+            eprintln!("  autowasm deploy <repository-path>");
             eprintln!("  autowasm build <wat-path> <wasm-path>");
             eprintln!("  autowasm run <wasm-path>");
             eprintln!("  autowasm invoke <wasm-path> <method> <path> [body]");
             std::process::exit(1);
         }
     }
+}
+
+fn deploy_command(args: &[String]) {
+    if args.len() != 3 {
+        eprintln!("Usage: autowasm deploy <repository-path>");
+        std::process::exit(1);
+    }
+
+    let repository = Path::new(&args[2]);
+    let detection = match detector::detect(repository) {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let framework = match framework::detect(repository) {
+        Ok(framework) => framework,
+        Err(error) => {
+            eprintln!("Framework detection error: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    println!("Analyzing repository: {}", repository.display());
+    println!();
+    println!("Language: {}", detection.language);
+    println!("Framework: {framework}");
+
+    let summary = match deployment::deploy(repository) {
+        Ok(summary) => summary,
+        Err(error) => {
+            eprintln!("Deployment error: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    println!();
+    println!("Deployment:");
+    println!("  Services: {}", summary.services);
+    println!("  Compiled: {}", summary.compiled);
+    println!("  Unsupported: {}", summary.unsupported);
+    println!("  Output: {}", summary.output.display());
 }
 
 fn analyze_command(args: &[String]) {

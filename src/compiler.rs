@@ -1,6 +1,5 @@
 use std::io;
 
-use crate::capability::Capability;
 use crate::service::Service;
 use serde_json::{Map, Number, Value};
 
@@ -304,6 +303,7 @@ fn escape_wat_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capability::Capability;
 
     #[test]
     fn compiles_static_service() {
