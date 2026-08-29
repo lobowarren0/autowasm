@@ -55,45 +55,30 @@ impl CloudflareDeployer {
         let manifest: Manifest = serde_json::from_slice(&fs::read(manifest_path)?)
             .map_err(|error| io::Error::other(error.to_string()))?;
 
-        let mut bindings = Vec::new();
-        let mut form = Form::new();
-
-        let mut worker = String::from("const routes = [\n");
-        for service in manifest
+        let compiled: Vec<&ManifestService> = manifest
             .services
             .iter()
             .filter(|service| service.artifact.is_some())
-        {
+            .collect();
+
+        let mut form = Form::new();
+        for service in &compiled {
             let artifact_path = service.artifact.as_deref().unwrap_or_default();
             let wasm_path = artifact_file(artifact, artifact_path)?;
             let part_name = format!("{}.wasm", service.name);
-            let binding_name = binding_name(&service.name);
-            bindings.push(json!({
-                "type": "wasm_module",
-                "name": binding_name,
-                "part": part_name,
-            }));
             form = form.part(
                 part_name.clone(),
-                Part::bytes(fs::read(wasm_path)?).file_name(part_name.clone()),
+                Part::bytes(fs::read(wasm_path)?)
+                    .file_name(part_name.clone())
+                    .mime_str("application/wasm")
+                    .map_err(|error| io::Error::other(error.to_string()))?,
             );
-            worker.push_str(&format!(
-                "  {{ method: {}, path: {}, binding: {} }},\n",
-                json_string(&service.method),
-                json_string(&route_pattern(&service.path)),
-                json_string(&binding_name)
-            ));
         }
-        worker.push_str(
-            "];
-\n",
-        );
-        worker.push_str(WORKER_RUNTIME);
 
+        let worker = generate_worker(&compiled);
         let metadata = json!({
             "main_module": "worker.js",
             "compatibility_date": COMPATIBILITY_DATE,
-            "bindings": bindings,
         });
         form = form.part(
             "metadata",
@@ -103,7 +88,10 @@ impl CloudflareDeployer {
         );
         Ok(form.part(
             "worker.js",
-            Part::bytes(worker.into_bytes()).file_name("worker.js"),
+            Part::bytes(worker.into_bytes())
+                .file_name("worker.js")
+                .mime_str("application/javascript+module")
+                .map_err(|error| io::Error::other(error.to_string()))?,
         ))
     }
 }
@@ -187,7 +175,30 @@ fn required_env(name: &str) -> io::Result<String> {
         .map_err(|_| io::Error::other(format!("missing required environment variable: {name}")))
 }
 
-fn binding_name(name: &str) -> String {
+fn generate_worker(services: &[&ManifestService]) -> String {
+    let mut worker = String::new();
+    for service in services {
+        worker.push_str(&format!(
+            "import {} from \"./{}.wasm\";\n",
+            module_ident(&service.name),
+            service.name
+        ));
+    }
+    worker.push_str("\nconst routes = [\n");
+    for service in services {
+        worker.push_str(&format!(
+            "  {{ method: {}, path: {}, module: {} }},\n",
+            json_string(&service.method),
+            json_string(&route_pattern(&service.path)),
+            module_ident(&service.name)
+        ));
+    }
+    worker.push_str("];\n\n");
+    worker.push_str(WORKER_RUNTIME);
+    worker
+}
+
+fn module_ident(name: &str) -> String {
     format!(
         "SERVICE_{}",
         name.chars()
@@ -263,7 +274,7 @@ export default {
       candidate.method === request.method && new RegExp(candidate.path).test(url.pathname),
     );
     if (!route) return new Response("Not Found", { status: 404 });
-    return invoke(env[route.binding], {
+    return invoke(route.module, {
       method: request.method,
       path: url.pathname,
       body: await request.text(),
@@ -285,8 +296,24 @@ mod tests {
         };
 
         assert_eq!(config.worker_name, "autowasm");
-        assert_eq!(binding_name("get-users-id"), "SERVICE_GET_USERS_ID");
+        assert_eq!(module_ident("get-users-id"), "SERVICE_GET_USERS_ID");
         assert_eq!(route_pattern("/users/:id"), "^/users/[^/]+$");
+    }
+
+    #[test]
+    fn generates_es_module_wasm_imports_instead_of_bindings() {
+        let hello = ManifestService {
+            name: "get-hello".to_string(),
+            method: "GET".to_string(),
+            path: "/hello".to_string(),
+            artifact: Some("services/get-hello/service.wasm".to_string()),
+        };
+        let worker = generate_worker(&[&hello]);
+
+        assert!(worker.contains("import SERVICE_GET_HELLO from \"./get-hello.wasm\";"));
+        assert!(worker.contains("module: SERVICE_GET_HELLO"));
+        assert!(!worker.contains("wasm_module"));
+        assert!(!worker.contains("env[route.binding]"));
     }
 
     #[test]
